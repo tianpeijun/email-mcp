@@ -214,6 +214,7 @@ npm run dev
 - [Gmail API文档](https://developers.google.com/gmail/api)
 - [QQ邮箱SMTP设置](https://service.mail.qq.com/cgi-bin/help?subtype=1&&id=28&&no=1001256)
 - [AWS 部署文档](./cdk/DEPLOYMENT.md)
+- 163邮箱查询邮件信息时候出现Unsafe Login. Please contact kefu@188.com for help。 https://m.lihuanting.com/blog/a/19  
 
 ## �� 许可证
 
