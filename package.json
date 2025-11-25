@@ -30,6 +30,7 @@
     "dotenv": "^16.3.0",
     "googleapis": "^131.0.0",
     "imap": "^0.8.19",
+    "imap-mkl": "^1.0.2",
     "mailparser": "^3.9.0",
     "nodemailer": "^7.0.10",
     "zod": "^3.22.0"

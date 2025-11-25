@@ -20,3 +20,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Deployment artifacts
+deployment/
+deployment.zip
+cdk/deployment/
+cdk/deployment.zip

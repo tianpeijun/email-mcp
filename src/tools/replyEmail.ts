@@ -1,7 +1,10 @@
 import { google } from "googleapis";
 import nodemailer from "nodemailer";
-import Imap from "imap";
+import ImapOriginal from "imap";
+// @ts-ignore
+import ImapMkl from "imap-mkl";
 import { simpleParser } from "mailparser";
+import { getEmailAccounts, getDefaultAccount } from "../utils/emailAccounts.js";
 
 interface ReplyEmailArgs {
   messageId: string;
@@ -27,6 +30,21 @@ function getSmtpConfig() {
 }
 
 function getImapConfig() {
+  const accounts = getEmailAccounts();
+  const defaultAccountName = getDefaultAccount();
+  const defaultAccount = accounts.get(defaultAccountName);
+  
+  if (defaultAccount) {
+    return {
+      user: defaultAccount.imap.user,
+      password: defaultAccount.imap.pass,
+      host: defaultAccount.imap.host,
+      port: defaultAccount.imap.port,
+      tls: defaultAccount.imap.secure,
+      tlsOptions: { rejectUnauthorized: false },
+    };
+  }
+  
   return {
     user: process.env.IMAP_USER || process.env.SMTP_USER!,
     password: process.env.IMAP_PASS || process.env.SMTP_PASS!,
@@ -37,13 +55,51 @@ function getImapConfig() {
   };
 }
 
+function getSmtpConfigForAccount() {
+  const accounts = getEmailAccounts();
+  const defaultAccountName = getDefaultAccount();
+  const defaultAccount = accounts.get(defaultAccountName);
+  
+  if (defaultAccount) {
+    return {
+      host: defaultAccount.smtp.host,
+      port: defaultAccount.smtp.port,
+      secure: defaultAccount.smtp.secure,
+      auth: {
+        user: defaultAccount.smtp.user,
+        pass: defaultAccount.smtp.pass,
+      },
+    };
+  }
+  
+  return getSmtpConfig();
+}
+
 async function getOriginalEmailViaImap(messageId: string): Promise<any> {
   return new Promise((resolve, reject) => {
     const config = getImapConfig();
-    const imap = new Imap(config);
+    
+    // 检查是否是 163 邮箱
+    const is163 = config.host.includes('163.com');
+    let imap: any;
+    
+    if (is163) {
+      const configWith163Id = {
+        ...config,
+        id: {
+          name: 'email-mcp',
+          version: '1.0.0',
+          vendor: 'email-mcp-client',
+          'support-email': config.user
+        }
+      };
+      imap = new ImapMkl(configWith163Id);
+    } else {
+      imap = new ImapOriginal(config);
+    }
 
     imap.once("ready", () => {
-      imap.openBox("INBOX", true, (err, box) => {
+      imap.openBox("INBOX", true, (err: any, box: any) => {
         if (err) {
           imap.end();
           return reject(err);
@@ -98,7 +154,7 @@ async function getOriginalEmailViaImap(messageId: string): Promise<any> {
 }
 
 async function replyViaSmtp(args: ReplyEmailArgs, originalEmail: any): Promise<string> {
-  const config = getSmtpConfig();
+  const config = getSmtpConfigForAccount();
   const transporter = nodemailer.createTransport(config);
 
   const replySubject = originalEmail.subject.startsWith("Re:") 

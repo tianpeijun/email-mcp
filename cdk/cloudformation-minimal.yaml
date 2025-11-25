@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Email MCP Server - Minimal Deployment'
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: Default VPC ID
+    Default: 'vpc-08d5695ae67ddc5a3'
+  
+  SubnetId:
+    Type: String
+    Description: Public Subnet
+    Default: 'subnet-090919061d97b3ba8'
+
+Resources:
+  # Security Group for EC2
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: email-mcp-ec2-sg-minimal
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3200
+          ToPort: 3200
+          CidrIp: 0.0.0.0/0
+          Description: Allow traffic on port 3200
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH access
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: email-mcp-ec2-sg-minimal
+
+  # IAM Role
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: email-mcp-ec2-role-minimal
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::email-mcp-deployment-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::email-mcp-deployment-${AWS::AccountId}/*'
+      Tags:
+        - Key: Name
+          Value: email-mcp-ec2-role-minimal
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: email-mcp-ec2-profile-minimal
+      Roles:
+        - !Ref EC2Role
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/ec2/email-mcp-minimal
+      RetentionInDays: 7
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref SubnetId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+          
+          echo "Starting EC2 initialization..."
+          dnf update -y
+          
+          # Install Node.js 18
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+          dnf install -y nodejs
+          
+          # Install CloudWatch Agent
+          dnf install -y amazon-cloudwatch-agent
+          
+          # Create application directory
+          mkdir -p /opt/email-mcp
+          cd /opt/email-mcp
+          
+          # Download deployment package
+          aws s3 cp s3://email-mcp-deployment-${AWS::AccountId}/deployment.zip . --region ${AWS::Region}
+          unzip -o deployment.zip
+          rm deployment.zip
+          chown -R ec2-user:ec2-user /opt/email-mcp
+          chmod +x /opt/email-mcp/start.sh
+          
+          # Configure CloudWatch Logs
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json << 'EOF'
+          {
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/email-mcp.log",
+                      "log_group_name": "/aws/ec2/email-mcp-minimal",
+                      "log_stream_name": "{instance_id}"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+          
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config -m ec2 -s \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+          
+          # Create systemd service
+          cat > /etc/systemd/system/email-mcp.service << 'EOF'
+          [Unit]
+          Description=Email MCP Server
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=ec2-user
+          WorkingDirectory=/opt/email-mcp
+          ExecStart=/usr/bin/npx supergateway --stdio "node dist/index.js" --port 3200
+          Restart=always
+          RestartSec=10
+          StandardOutput=append:/var/log/email-mcp.log
+          StandardError=append:/var/log/email-mcp.log
+          Environment="NODE_ENV=production"
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          systemctl daemon-reload
+          systemctl enable email-mcp
+          systemctl start email-mcp
+          
+          echo "EC2 initialization completed!"
+      Tags:
+        - Key: Name
+          Value: email-mcp-server-minimal
+
+Outputs:
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+
+  EC2PublicIP:
+    Description: EC2 Public IP
+    Value: !GetAtt EC2Instance.PublicIp
+
+  ServiceEndpoint:
+    Description: MCP Service Endpoint
+    Value: !Sub 'http://${EC2Instance.PublicIp}:3200/sse'

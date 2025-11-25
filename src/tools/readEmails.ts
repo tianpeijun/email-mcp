@@ -1,11 +1,15 @@
 import { google } from "googleapis";
-import Imap from "imap";
+import ImapOriginal from "imap";
+// @ts-ignore
+import ImapMkl from "imap-mkl";
 import { simpleParser } from "mailparser";
+import { getEmailAccounts, getAccountByEmail, getDefaultAccount } from "../utils/emailAccounts.js";
 
 interface ReadEmailsArgs {
   limit: number;
   folder: string;
   unreadOnly: boolean;
+  account?: string; // 可选：指定账户名称（qq, 163）或邮箱地址
 }
 
 interface EmailMessage {
@@ -24,7 +28,47 @@ function getEmailProvider(): string {
   return process.env.EMAIL_PROVIDER || "smtp";
 }
 
-function getImapConfig() {
+function getImapConfig(accountName?: string) {
+  const accounts = getEmailAccounts();
+  
+  // 如果指定了账户，使用指定的账户
+  if (accountName) {
+    // 先尝试作为账户名称查找
+    let account = accounts.get(accountName.toLowerCase());
+    
+    // 如果没找到，尝试作为邮箱地址查找
+    if (!account) {
+      account = getAccountByEmail(accountName);
+    }
+    
+    if (account) {
+      return {
+        user: account.imap.user,
+        password: account.imap.pass,
+        host: account.imap.host,
+        port: account.imap.port,
+        tls: account.imap.secure,
+        tlsOptions: { rejectUnauthorized: false },
+      };
+    }
+  }
+  
+  // 使用默认账户
+  const defaultAccountName = getDefaultAccount();
+  const defaultAccount = accounts.get(defaultAccountName);
+  
+  if (defaultAccount) {
+    return {
+      user: defaultAccount.imap.user,
+      password: defaultAccount.imap.pass,
+      host: defaultAccount.imap.host,
+      port: defaultAccount.imap.port,
+      tls: defaultAccount.imap.secure,
+      tlsOptions: { rejectUnauthorized: false },
+    };
+  }
+  
+  // 回退到环境变量配置
   return {
     user: process.env.IMAP_USER || process.env.SMTP_USER!,
     password: process.env.IMAP_PASS || process.env.SMTP_PASS!,
@@ -46,12 +90,30 @@ function getGmailConfig() {
 
 async function readEmailsViaImap(args: ReadEmailsArgs): Promise<EmailMessage[]> {
   return new Promise((resolve, reject) => {
-    const config = getImapConfig();
-    const imap = new Imap(config);
+    const config = getImapConfig(args.account);
+    
+    // 检查是否是 163 邮箱，如果是则使用 imap-mkl 并添加 ID 信息
+    const is163 = config.host.includes('163.com');
+    let imap: any;
+    
+    if (is163) {
+      const configWith163Id = {
+        ...config,
+        id: {
+          name: 'email-mcp',
+          version: '1.0.0',
+          vendor: 'email-mcp-client',
+          'support-email': config.user
+        }
+      };
+      imap = new ImapMkl(configWith163Id);
+    } else {
+      imap = new ImapOriginal(config);
+    }
     const emails: EmailMessage[] = [];
 
     imap.once("ready", () => {
-      imap.openBox(args.folder, true, (err, box) => {
+      imap.openBox(args.folder, true, (err: any, box: any) => {
         if (err) {
           imap.end();
           return reject(err);
@@ -59,7 +121,7 @@ async function readEmailsViaImap(args: ReadEmailsArgs): Promise<EmailMessage[]> 
 
         const searchCriteria = args.unreadOnly ? ["UNSEEN"] : ["ALL"];
         
-        imap.search(searchCriteria, (err, results) => {
+        imap.search(searchCriteria, (err: any, results: any) => {
           if (err) {
             imap.end();
             return reject(err);

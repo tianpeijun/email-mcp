@@ -1,0 +1,344 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Email MCP Server - With ALB on port 9095'
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: Default VPC ID
+    Default: 'vpc-08d5695ae67ddc5a3'
+  
+  Subnet1:
+    Type: String
+    Description: Public Subnet 1 (us-east-1a)
+    Default: 'subnet-090919061d97b3ba8'
+  
+  Subnet2:
+    Type: String
+    Description: Public Subnet 2 (us-east-1b)
+    Default: 'subnet-030e23907b7b02d17'
+
+Resources:
+  # ============================================
+  # Security Groups
+  # ============================================
+  
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: email-mcp-alb-sg-v2
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9095
+          ToPort: 9095
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP traffic on port 9095 from internet
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: email-mcp-alb-sg-v2
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: email-mcp-ec2-sg-v2
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3200
+          ToPort: 3200
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Allow traffic from ALB on port 3200
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH access
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: email-mcp-ec2-sg-v2
+
+  # ============================================
+  # IAM Roles and Policies
+  # ============================================
+  
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: email-mcp-ec2-role-v2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::email-mcp-deployment-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::email-mcp-deployment-${AWS::AccountId}/*'
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/email-mcp-alb:*'
+        - PolicyName: ELBRegisterTargets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:DeregisterTargets
+                  - elasticloadbalancing:DescribeTargetHealth
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: email-mcp-ec2-role-v2
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: email-mcp-ec2-profile-v2
+      Roles:
+        - !Ref EC2Role
+
+  # ============================================
+  # CloudWatch Logs
+  # ============================================
+  
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/ec2/email-mcp-alb
+      RetentionInDays: 7
+
+  # ============================================
+  # Application Load Balancer and Target Group
+  # ============================================
+  
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: email-mcp-tg-v2
+      Port: 3200
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: '3200'
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200-299'
+      TargetType: instance
+      Tags:
+        - Key: Name
+          Value: email-mcp-target-group-v2
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: email-mcp-alb-v2
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: email-mcp-alb-v2
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 9095
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ============================================
+  # EC2 Instance
+  # ============================================
+  
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref Subnet1
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+          
+          echo "Starting EC2 initialization..."
+          dnf update -y
+          
+          # Install Node.js 18
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+          dnf install -y nodejs
+          
+          # Install CloudWatch Agent
+          dnf install -y amazon-cloudwatch-agent
+          
+          # Create application directory
+          mkdir -p /opt/email-mcp
+          cd /opt/email-mcp
+          
+          # Download deployment package
+          aws s3 cp s3://email-mcp-deployment-${AWS::AccountId}/deployment.zip . --region ${AWS::Region}
+          unzip -o deployment.zip
+          rm deployment.zip
+          chown -R ec2-user:ec2-user /opt/email-mcp
+          chmod +x /opt/email-mcp/start.sh
+          
+          # Configure CloudWatch Logs
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json << 'EOF'
+          {
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/email-mcp.log",
+                      "log_group_name": "/aws/ec2/email-mcp-alb",
+                      "log_stream_name": "{instance_id}"
+                    },
+                    {
+                      "file_path": "/var/log/user-data.log",
+                      "log_group_name": "/aws/ec2/email-mcp-alb",
+                      "log_stream_name": "{instance_id}-userdata"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+          
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config -m ec2 -s \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+          
+          # Create systemd service
+          cat > /etc/systemd/system/email-mcp.service << 'EOF'
+          [Unit]
+          Description=Email MCP Server
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=ec2-user
+          WorkingDirectory=/opt/email-mcp
+          ExecStart=/usr/bin/npx supergateway --stdio "node dist/index.js" --port 3200
+          Restart=always
+          RestartSec=10
+          StandardOutput=append:/var/log/email-mcp.log
+          StandardError=append:/var/log/email-mcp.log
+          Environment="NODE_ENV=production"
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          systemctl daemon-reload
+          systemctl enable email-mcp
+          systemctl start email-mcp
+          
+          # Wait for service to start
+          sleep 15
+          
+          # Register instance with target group
+          echo "Registering instance with target group..."
+          INSTANCE_ID=$(ec2-metadata --instance-id | cut -d " " -f 2)
+          TARGET_GROUP_ARN="${TargetGroup}"
+          aws elbv2 register-targets \
+            --target-group-arn $TARGET_GROUP_ARN \
+            --targets Id=$INSTANCE_ID,Port=3200 \
+            --region ${AWS::Region}
+          
+          echo "EC2 initialization completed!"
+      Tags:
+        - Key: Name
+          Value: email-mcp-server-alb
+
+# ============================================
+# Stack Outputs
+# ============================================
+
+Outputs:
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-ALBDNSName'
+
+  ServiceEndpoint:
+    Description: MCP Service Endpoint (use this URL to connect)
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}:9095/sse'
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceEndpoint'
+
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-EC2InstanceId'
+
+  EC2PublicIP:
+    Description: EC2 Public IP (for SSH access)
+    Value: !GetAtt EC2Instance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-EC2PublicIP'
+
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'
+
+  LogGroupName:
+    Description: CloudWatch Log Group Name
+    Value: !Ref LogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'

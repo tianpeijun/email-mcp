@@ -16,6 +16,7 @@ import { createReadEmailsTool } from "./tools/readEmails.js";
 import { createSearchEmailsTool } from "./tools/searchEmails.js";
 import { createDeleteEmailTool } from "./tools/deleteEmail.js";
 import { createReplyEmailTool } from "./tools/replyEmail.js";
+import { createListAccountsTool } from "./tools/listAccounts.js";
 
 // Load environment variables
 dotenv.config();
@@ -38,6 +39,7 @@ const ReadEmailsSchema = z.object({
   limit: z.number().optional().default(10),
   folder: z.string().optional().default("INBOX"),
   unreadOnly: z.boolean().optional().default(false),
+  account: z.string().optional(),
 });
 
 const SearchEmailsSchema = z.object({
@@ -81,8 +83,16 @@ class EmailMCPServer {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       const tools: Tool[] = [
         {
+          name: "list_accounts",
+          description: "List all configured email accounts",
+          inputSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
           name: "send_email",
-          description: "Send an email to specified recipients",
+          description: "Send an email to specified recipients. Supports multiple email accounts (QQ, 163, etc.). If 'from' is specified, the system will automatically select the matching account.",
           inputSchema: {
             type: "object",
             properties: {
@@ -100,7 +110,7 @@ class EmailMCPServer {
               },
               from: {
                 type: "string",
-                description: "Sender email address (optional)",
+                description: "Sender email address (optional, used to select account. e.g., xxx@qq.com or xxx@163.com)",
               },
               html: {
                 type: "boolean",
@@ -124,7 +134,7 @@ class EmailMCPServer {
         },
         {
           name: "read_emails",
-          description: "Read emails from inbox or specified folder",
+          description: "Read emails from inbox or specified folder. Supports multiple accounts (QQ, 163, etc.)",
           inputSchema: {
             type: "object",
             properties: {
@@ -139,6 +149,10 @@ class EmailMCPServer {
               unreadOnly: {
                 type: "boolean",
                 description: "Only retrieve unread emails",
+              },
+              account: {
+                type: "string",
+                description: "Account name (qq, 163) or email address to read from (optional, uses default if not specified)",
               },
             },
           },
@@ -214,6 +228,11 @@ class EmailMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         switch (request.params.name) {
+          case "list_accounts": {
+            const listAccountsTool = createListAccountsTool();
+            return await listAccountsTool();
+          }
+
           case "send_email": {
             const args = SendEmailSchema.parse(request.params.arguments);
             const sendEmailTool = createSendEmailTool();

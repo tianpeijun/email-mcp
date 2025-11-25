@@ -1,13 +1,14 @@
 import nodemailer from "nodemailer";
 import { gmail_v1, google } from "googleapis";
 import fs from "fs/promises";
+import { getEmailAccounts, getAccountByEmail, getDefaultAccount } from "../utils/emailAccounts.js";
 
 // 发送邮件参数接口
 interface SendEmailArgs {
   to: string;          // 收件人
   subject: string;     // 邮件主题
   body: string;        // 邮件内容
-  from?: string;       // 发件人（可选）
+  from?: string;       // 发件人（可选，用于选择账户）
   html?: boolean;      // 是否为HTML格式
   attachments?: Array<{
     filename: string;  // 附件文件名
@@ -110,7 +111,69 @@ async function sendViaGmail(args: SendEmailArgs, config: EmailConfig) {
   };
 }
 
-// 通过SMTP发送邮件
+// 通过SMTP发送邮件（多账户支持）
+async function sendViaSMTPMultiAccount(args: SendEmailArgs) {
+  const accounts = getEmailAccounts();
+  
+  // 根据 from 参数选择账户，如果没有指定则使用默认账户
+  let account;
+  if (args.from) {
+    account = getAccountByEmail(args.from);
+  } else {
+    const defaultAccountName = getDefaultAccount();
+    account = accounts.get(defaultAccountName);
+  }
+
+  if (!account) {
+    throw new Error("未找到可用的邮箱账户配置");
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: account.smtp.host,
+    port: account.smtp.port,
+    secure: account.smtp.secure,
+    auth: {
+      user: account.smtp.user,
+      pass: account.smtp.pass,
+    },
+  });
+
+  // 处理附件
+  const attachments = [];
+  if (args.attachments) {
+    for (const attachment of args.attachments) {
+      if (attachment.path) {
+        attachments.push({
+          filename: attachment.filename,
+          path: attachment.path,
+        });
+      } else if (attachment.content) {
+        attachments.push({
+          filename: attachment.filename,
+          content: attachment.content,
+        });
+      }
+    }
+  }
+
+  const mailOptions = {
+    from: account.smtp.user,
+    to: args.to,
+    subject: args.subject,
+    [args.html ? "html" : "text"]: args.body,
+    attachments: attachments.length > 0 ? attachments : undefined,
+  };
+
+  const result = await transporter.sendMail(mailOptions);
+  return {
+    success: true,
+    messageId: result.messageId,
+    provider: "smtp",
+    accountUsed: account.smtp.user,
+  };
+}
+
+// 通过SMTP发送邮件（旧版单账户）
 async function sendViaSMTP(args: SendEmailArgs, config: EmailConfig) {
   const transporter = nodemailer.createTransport({
     host: config.smtp!.host,
@@ -119,18 +182,15 @@ async function sendViaSMTP(args: SendEmailArgs, config: EmailConfig) {
     auth: config.smtp!.auth,
   });
 
-  // 处理附件
   const attachments = [];
   if (args.attachments) {
     for (const attachment of args.attachments) {
       if (attachment.path) {
-        // 文件附件
         attachments.push({
           filename: attachment.filename,
           path: attachment.path,
         });
       } else if (attachment.content) {
-        // 内容附件
         attachments.push({
           filename: attachment.filename,
           content: attachment.content,
@@ -152,6 +212,7 @@ async function sendViaSMTP(args: SendEmailArgs, config: EmailConfig) {
     success: true,
     messageId: result.messageId,
     provider: "smtp",
+    accountUsed: args.from || config.defaultFrom,
   };
 }
 
@@ -159,9 +220,24 @@ async function sendViaSMTP(args: SendEmailArgs, config: EmailConfig) {
 export function createSendEmailTool() {
   return async (args: SendEmailArgs) => {
     try {
+      const accounts = getEmailAccounts();
+      
+      // 如果有多账户配置，使用多账户模式
+      if (accounts.size > 0) {
+        const result = await sendViaSMTPMultiAccount(args);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ 邮件发送成功！\n\n详情:\n- 发件人: ${result.accountUsed}\n- 收件人: ${args.to}\n- 主题: ${args.subject}\n- 消息ID: ${result.messageId}\n- 格式: ${args.html ? "HTML" : "纯文本"}${args.attachments ? `\n- 附件数量: ${args.attachments.length}` : ""}`,
+            },
+          ],
+        };
+      }
+      
+      // 否则使用旧版单账户模式
       const config = getEmailConfig();
       
-      // 验证必需的环境变量
       if (config.provider === "gmail") {
         if (!config.gmail?.clientId || !config.gmail?.clientSecret || !config.gmail?.refreshToken) {
           throw new Error("Gmail配置缺失。请设置 GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, 和 GMAIL_REFRESH_TOKEN");
@@ -176,7 +252,7 @@ export function createSendEmailTool() {
         throw new Error("DEFAULT_FROM_EMAIL 环境变量是必需的");
       }
 
-      let result;
+      let result: any;
       if (config.provider === "gmail") {
         result = await sendViaGmail(args, config);
       } else {
@@ -187,7 +263,7 @@ export function createSendEmailTool() {
         content: [
           {
             type: "text",
-            text: `✅ 邮件发送成功！\n\n详情:\n- 收件人: ${args.to}\n- 主题: ${args.subject}\n- 提供商: ${result.provider}\n- 消息ID: ${result.messageId}\n- 格式: ${args.html ? "HTML" : "纯文本"}${args.attachments ? `\n- 附件数量: ${args.attachments.length}` : ""}`,
+            text: `✅ 邮件发送成功！\n\n详情:\n- 发件人: ${result.accountUsed || config.defaultFrom}\n- 收件人: ${args.to}\n- 主题: ${args.subject}\n- 提供商: ${result.provider}\n- 消息ID: ${result.messageId}\n- 格式: ${args.html ? "HTML" : "纯文本"}${args.attachments ? `\n- 附件数量: ${args.attachments.length}` : ""}`,
           },
         ],
       };

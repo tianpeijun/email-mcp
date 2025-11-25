@@ -213,7 +213,46 @@ npm run dev
 - [SuperGateway](https://supergateway.ai)
 - [Gmail API文档](https://developers.google.com/gmail/api)
 - [QQ邮箱SMTP设置](https://service.mail.qq.com/cgi-bin/help?subtype=1&&id=28&&no=1001256)
+- [AWS 部署文档](./cdk/DEPLOYMENT.md)
 
 ## �� 许可证
 
 ISC License 
+##
+ ☁️ AWS 部署
+
+本项目支持一键部署到 AWS 云平台，使用 EC2 + ALB 架构。
+
+### 快速部署
+
+```bash
+# 1. 配置 AWS 凭证
+aws configure
+
+# 2. 创建 .env 文件
+cp env.example .env
+# 编辑 .env 配置邮件账户
+
+# 3. 运行部署脚本
+cd cdk
+./deploy.sh
+```
+
+部署完成后，你将获得一个 ALB 端点，可以在 MCP 客户端中使用：
+
+```
+http://<alb-dns-name>:9095/sse
+```
+
+详细部署文档请参考 [cdk/DEPLOYMENT.md](./cdk/DEPLOYMENT.md)
+
+### 部署架构
+
+- **ALB**: 应用负载均衡器（端口 9095）
+- **EC2**: t3.small 实例运行 SuperGateway（端口 3200）
+- **S3**: 存储部署代码包
+- **CloudWatch**: 集中日志管理
+
+### 成本估算
+
+约 $35/月（us-east-1 区域）

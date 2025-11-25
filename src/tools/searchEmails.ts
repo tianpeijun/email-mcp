@@ -1,5 +1,7 @@
 import { google } from "googleapis";
-import Imap from "imap";
+import ImapOriginal from "imap";
+// @ts-ignore
+import ImapMkl from "imap-mkl";
 import { simpleParser } from "mailparser";
 
 interface SearchEmailsArgs {
@@ -26,18 +28,36 @@ function getImapConfig() {
 async function searchEmailsViaImap(args: SearchEmailsArgs): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const config = getImapConfig();
-    const imap = new Imap(config);
+    
+    // 检查是否是 163 邮箱
+    const is163 = config.host.includes('163.com');
+    let imap: any;
+    
+    if (is163) {
+      const configWith163Id = {
+        ...config,
+        id: {
+          name: 'email-mcp',
+          version: '1.0.0',
+          vendor: 'email-mcp-client',
+          'support-email': config.user
+        }
+      };
+      imap = new ImapMkl(configWith163Id);
+    } else {
+      imap = new ImapOriginal(config);
+    }
     const emails: any[] = [];
 
     imap.once("ready", () => {
-      imap.openBox(args.folder, true, (err, box) => {
+      imap.openBox(args.folder, true, (err: any, box: any) => {
         if (err) {
           imap.end();
           return reject(err);
         }
 
         // Search all emails first
-        imap.search(["ALL"], (err, results) => {
+        imap.search(["ALL"], (err: any, results: any) => {
           if (err) {
             imap.end();
             return reject(err);
