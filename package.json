@@ -15,22 +15,32 @@
     "quick-setup": "npm install && npm run build && echo \"✅ 安装完成！请查看 README.md 了解配置方法\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["mcp", "email", "gmail", "smtp", "imap"],
+  "keywords": [
+    "mcp",
+    "email",
+    "gmail",
+    "smtp",
+    "imap"
+  ],
   "author": "",
   "license": "ISC",
   "description": "Email MCP Server for email interactions - send, receive, and manage emails",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "nodemailer": "^6.9.0",
-    "googleapis": "^131.0.0",
     "dotenv": "^16.3.0",
+    "googleapis": "^131.0.0",
+    "imap": "^0.8.19",
+    "mailparser": "^3.9.0",
+    "nodemailer": "^7.0.10",
     "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@types/imap": "^0.8.42",
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.15.21",
     "@types/nodemailer": "^6.4.0",
     "supergateway": "^2.8.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   }
-} 
+}

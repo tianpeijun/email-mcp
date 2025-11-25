@@ -1,4 +1,6 @@
 import { google } from "googleapis";
+import Imap from "imap";
+import { simpleParser } from "mailparser";
 
 interface ReadEmailsArgs {
   limit: number;
@@ -18,6 +20,21 @@ interface EmailMessage {
   body?: string;
 }
 
+function getEmailProvider(): string {
+  return process.env.EMAIL_PROVIDER || "smtp";
+}
+
+function getImapConfig() {
+  return {
+    user: process.env.IMAP_USER || process.env.SMTP_USER!,
+    password: process.env.IMAP_PASS || process.env.SMTP_PASS!,
+    host: process.env.IMAP_HOST || "imap.qq.com",
+    port: parseInt(process.env.IMAP_PORT || "993"),
+    tls: process.env.IMAP_SECURE !== "false",
+    tlsOptions: { rejectUnauthorized: false },
+  };
+}
+
 function getGmailConfig() {
   return {
     clientId: process.env.GMAIL_CLIENT_ID!,
@@ -25,6 +42,90 @@ function getGmailConfig() {
     refreshToken: process.env.GMAIL_REFRESH_TOKEN!,
     accessToken: process.env.GMAIL_ACCESS_TOKEN,
   };
+}
+
+async function readEmailsViaImap(args: ReadEmailsArgs): Promise<EmailMessage[]> {
+  return new Promise((resolve, reject) => {
+    const config = getImapConfig();
+    const imap = new Imap(config);
+    const emails: EmailMessage[] = [];
+
+    imap.once("ready", () => {
+      imap.openBox(args.folder, true, (err, box) => {
+        if (err) {
+          imap.end();
+          return reject(err);
+        }
+
+        const searchCriteria = args.unreadOnly ? ["UNSEEN"] : ["ALL"];
+        
+        imap.search(searchCriteria, (err, results) => {
+          if (err) {
+            imap.end();
+            return reject(err);
+          }
+
+          if (!results || results.length === 0) {
+            imap.end();
+            return resolve([]);
+          }
+
+          // Limit results
+          const limitedResults = results.slice(-args.limit);
+          
+          const fetch = imap.fetch(limitedResults, {
+            bodies: "",
+            struct: true,
+          });
+
+          fetch.on("message", (msg: any, seqno: number) => {
+            msg.on("body", (stream: any) => {
+              simpleParser(stream, async (err: any, parsed: any) => {
+                if (err) return;
+
+                const from = parsed.from?.text || "";
+                const to = parsed.to?.text || "";
+                const subject = parsed.subject || "";
+                const date = parsed.date?.toString() || "";
+                const textBody = parsed.text || "";
+                const htmlBody = parsed.html || "";
+                const body = textBody || htmlBody.toString().substring(0, 1000);
+
+                emails.push({
+                  id: seqno.toString(),
+                  threadId: parsed.messageId || seqno.toString(),
+                  from,
+                  to,
+                  subject,
+                  snippet: body.substring(0, 150),
+                  date,
+                  isUnread: args.unreadOnly,
+                  body: body.substring(0, 1000),
+                });
+              });
+            });
+          });
+
+          fetch.once("error", (err: any) => {
+            imap.end();
+            reject(err);
+          });
+
+          fetch.once("end", () => {
+            imap.end();
+            // Wait a bit for all messages to be parsed
+            setTimeout(() => resolve(emails), 500);
+          });
+        });
+      });
+    });
+
+    imap.once("error", (err: any) => {
+      reject(err);
+    });
+
+    imap.connect();
+  });
 }
 
 async function getGmailClient() {
@@ -93,58 +194,69 @@ function extractEmailBody(payload: any): string {
   return "";
 }
 
+async function readEmailsViaGmail(args: ReadEmailsArgs): Promise<EmailMessage[]> {
+  const gmail = await getGmailClient();
+  
+  let query = "";
+  if (args.folder !== "INBOX") {
+    query += `in:${args.folder}`;
+  }
+  if (args.unreadOnly) {
+    query += query ? " is:unread" : "is:unread";
+  }
+
+  const messagesResponse = await gmail.users.messages.list({
+    userId: "me",
+    q: query || undefined,
+    maxResults: args.limit,
+  });
+
+  const messages = messagesResponse.data.messages || [];
+  const emails: EmailMessage[] = [];
+
+  for (const message of messages) {
+    if (!message.id) continue;
+
+    const messageDetail = await gmail.users.messages.get({
+      userId: "me",
+      id: message.id,
+    });
+
+    const payload = messageDetail.data.payload;
+    if (!payload?.headers) continue;
+
+    const headers = parseEmailHeaders(payload.headers);
+    const body = extractEmailBody(payload);
+    
+    const isUnread = messageDetail.data.labelIds?.includes("UNREAD") || false;
+
+    emails.push({
+      id: message.id,
+      threadId: messageDetail.data.threadId || "",
+      from: headers.from,
+      to: headers.to,
+      subject: headers.subject,
+      snippet: messageDetail.data.snippet || "",
+      date: headers.date,
+      isUnread,
+      body: body.length > 1000 ? body.substring(0, 1000) + "..." : body,
+    });
+  }
+
+  return emails;
+}
+
 export function createReadEmailsTool() {
   return async (args: ReadEmailsArgs) => {
     try {
-      const gmail = await getGmailClient();
-      
-      // Build query
-      let query = "";
-      if (args.folder !== "INBOX") {
-        query += `in:${args.folder}`;
-      }
-      if (args.unreadOnly) {
-        query += query ? " is:unread" : "is:unread";
-      }
+      const provider = getEmailProvider();
+      let emails: EmailMessage[] = [];
 
-      // Get message list
-      const messagesResponse = await gmail.users.messages.list({
-        userId: "me",
-        q: query || undefined,
-        maxResults: args.limit,
-      });
-
-      const messages = messagesResponse.data.messages || [];
-      const emails: EmailMessage[] = [];
-
-      // Get details for each message
-      for (const message of messages) {
-        if (!message.id) continue;
-
-        const messageDetail = await gmail.users.messages.get({
-          userId: "me",
-          id: message.id,
-        });
-
-        const payload = messageDetail.data.payload;
-        if (!payload?.headers) continue;
-
-        const headers = parseEmailHeaders(payload.headers);
-        const body = extractEmailBody(payload);
-        
-        const isUnread = messageDetail.data.labelIds?.includes("UNREAD") || false;
-
-        emails.push({
-          id: message.id,
-          threadId: messageDetail.data.threadId || "",
-          from: headers.from,
-          to: headers.to,
-          subject: headers.subject,
-          snippet: messageDetail.data.snippet || "",
-          date: headers.date,
-          isUnread,
-          body: body.length > 1000 ? body.substring(0, 1000) + "..." : body,
-        });
+      if (provider === "gmail") {
+        emails = await readEmailsViaGmail(args);
+      } else {
+        // Use IMAP for SMTP provider
+        emails = await readEmailsViaImap(args);
       }
 
       const resultText = emails.length > 0 
